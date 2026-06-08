@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, session
 import datetime
 import requests
 import json
@@ -6,18 +6,26 @@ import os
 import random
 
 app = Flask(__name__)
+# This secret key is REQUIRED to let Flask use browser sessions/cookies
+app.secret_key = "zimma_super_secret_ai_key_123"
 
 MEMORY_FILE = "zimma_memory.json"
+
 
 def load_memory():
     if os.path.exists(MEMORY_FILE):
         with open(MEMORY_FILE, "r") as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except:
+                return {}
     return {}
+
 
 def save_memory(memory):
     with open(MEMORY_FILE, "w") as f:
         json.dump(memory, f)
+
 
 def get_weather():
     try:
@@ -26,8 +34,9 @@ def get_weather():
     except:
         return "I can't get the weather right now."
 
+
 roblox = {
-"how do i make a door": "local door = script.Parent\ndoor.Touched:Connect(function()\n    door.CanCollide = false\n    wait(2)\n    door.CanCollide = true\nend)",
+    "how do i make a door": "local door = script.Parent\ndoor.Touched:Connect(function()\n    door.CanCollide = false\n    wait(2)\n    door.CanCollide = true\nend)",
     "how do i make a part move": "local part = script.Parent\nlocal goal = part.Position + Vector3.new(0, 10, 0)\nlocal tweenService = game:GetService('TweenService')\nlocal info = TweenInfo.new(2)\nlocal tween = tweenService:Create(part, info, {Position = goal})\ntween:Play()",
     "how do i print in roblox": 'print("Hello from Roblox!")',
     "how do i add a leaderboard": "game.Players.PlayerAdded:Connect(function(player)\n    local leaderstats = Instance.new('Folder')\n    leaderstats.Name = 'leaderstats'\n    leaderstats.Parent = player\n    local cash = Instance.new('IntValue')\n    cash.Name = 'Cash'\n    cash.Value = 0\n    cash.Parent = leaderstats\nend)",
@@ -38,9 +47,9 @@ roblox = {
 }
 
 responses = {
-"what is your favorite color": "Black. Like the void I live in.",
-"do you know bunny": "foxy_foxYTT? Yeah I know her.",
-"quiet storm": "That's the studio. Rahiem's building something real.",
+    "what is your favorite color": "Black. Like the void I live in.",
+    "do you know bunny": "foxy_foxYTT? Yeah I know her.",
+    "quiet storm": "That's the studio. Rahiem's building something real.",
     "hello": "Hey! I'm Zimma. What's up?",
     "how are you": "I'm good, just chilling in your computer lol",
     "what can you do": "I can chat, check weather, tell time, remember things, and give you Roblox Lua code!",
@@ -60,35 +69,76 @@ responses = {
     "good morning": "Morning. You ready for the day?",
 }
 
+
 @app.route("/")
 def home():
     return render_template("index.html")
 
+
 @app.route("/chat", methods=["POST"])
 def chat():
     memory = load_memory()
-    user = request.json.get("message", "").lower()
+    user = request.json.get("message", "").lower().strip()
     response = ""
+
+    # Check the browser cookie to see who is currently talking to Zimma
+    current_user = session.get("user_name")
 
     if user == "what is the weather":
         response = get_weather()
     elif user in roblox:
         response = "Here's the Lua code:\n" + roblox[user]
+
+    # 1. REMEMBER NEW NAMES
     elif user.startswith("my name is "):
         name = user.replace("my name is ", "").strip().title()
-        memory["name"] = name
+        session["user_name"] = name  # Tag this browser session with their name
+
+        if name not in memory:
+            memory[name] = {}  # Create a brand new profile for this person
+
         save_memory(memory)
         response = f"Got it. I'll remember that, {name}."
+
+    # 2. CHECK NAME LOOKUP
+    elif "what" in user and "my name" in user:
+        if current_user:
+            response = f"Your name is {current_user}!"
+        else:
+            response = "I don't know your name yet. Tell me by saying: my name is [your name]"
+
+    # 3. SAVE A FACT FOR THIS SPECIFIC PERSON
     elif user.startswith("remember that "):
-        fact = user.replace("remember that ", "").strip()
-        memory["fact"] = fact
-        save_memory(memory)
-        response = "Saved. I won't forget."
+        if current_user:
+            fact = user.replace("remember that ", "").strip()
+            memory[current_user]["fact"] = fact  # Save the fact inside their specific slot
+            save_memory(memory)
+            response = f"Saved to your profile, {current_user}. I won't forget."
+        else:
+            response = "Tell me your name first by saying 'my name is [name]' so I know who I'm remembering things for!"
+
+    # 4. ASK WHAT ZIMMA KNOWS ABOUT YOU
     elif user == "what do you remember":
-        response = str(memory) if memory else "I don't have anything saved yet."
+        if current_user and current_user in memory:
+            user_data = memory[current_user]
+            if "fact" in user_data:
+                response = f"Your name is {current_user}, and you told me to remember: '{user_data['fact']}'."
+            else:
+                response = f"I know your name is {current_user}, but you haven't told me any other facts yet!"
+        else:
+            response = "I don't remember anything because I don't know who you are yet!"
+
+    # 5. WIPE JUST YOUR PROFILE
     elif user == "forget everything":
-        save_memory({})
-        response = "Done. Memory cleared."
+        if current_user:
+            if current_user in memory:
+                del memory[current_user]
+            session.pop("user_name", None)
+            save_memory(memory)
+            response = "Done. I cleared your profile from my memory."
+        else:
+            response = "I don't know who you are, so there is nothing to forget!"
+
     elif user == "roblox help":
         response = "Ask me: " + ", ".join(roblox.keys())
     elif user in responses:
@@ -97,6 +147,7 @@ def chat():
         response = "I don't know that yet, but I'm learning."
 
     return jsonify({"response": response})
+
 
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0")
