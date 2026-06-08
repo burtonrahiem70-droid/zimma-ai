@@ -1,30 +1,44 @@
 from flask import Flask, request, jsonify, render_template, session
 import datetime
 import requests
-import json
+import sqlite3
 import os
-import random
 
 app = Flask(__name__)
-# This secret key is REQUIRED to let Flask use browser sessions/cookies
 app.secret_key = "zimma_super_secret_ai_key_123"
 
-MEMORY_FILE = "zimma_memory.json"
+# We store the database inside a special 'data' folder that we will make permanent on Render
+DB_FOLDER = "data"
+DB_FILE = os.path.join(DB_FOLDER, "zimma_vault.db")
 
 
-def load_memory():
-    if os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE, "r") as f:
-            try:
-                return json.load(f)
-            except:
-                return {}
-    return {}
+def init_db():
+    # Make sure the data folder exists
+    if not os.path.exists(DB_FOLDER):
+        os.makedirs(DB_FOLDER)
+
+    # Connect to database and create our tables if they don't exist yet
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    # Create a table for users and their saved facts
+    cursor.execute('''
+                   CREATE TABLE IF NOT EXISTS users
+                   (
+                       name
+                       TEXT
+                       PRIMARY
+                       KEY,
+                       fact
+                       TEXT
+                   )
+                   ''')
+    conn.commit()
+    conn.close()
 
 
-def save_memory(memory):
-    with open(MEMORY_FILE, "w") as f:
-        json.dump(memory, f)
+# Initialize the database vault immediately when the app starts
+init_db()
 
 
 def get_weather():
@@ -77,11 +91,8 @@ def home():
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    memory = load_memory()
     user = request.json.get("message", "").lower().strip()
     response = ""
-
-    # Check the browser cookie to see who is currently talking to Zimma
     current_user = session.get("user_name")
 
     if user == "what is the weather":
@@ -89,19 +100,21 @@ def chat():
     elif user in roblox:
         response = "Here's the Lua code:\n" + roblox[user]
 
-    # 1. REMEMBER NEW NAMES
+    # 1. REMEMBER NEW NAMES IN THE DATABASE
     elif user.startswith("my name is "):
         name = user.replace("my name is ", "").strip().title()
-        session["user_name"] = name  # Tag this browser session with their name
+        session["user_name"] = name
 
-        if name not in memory:
-            memory[name] = {}  # Create a brand new profile for this person
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO users (name, fact) VALUES (?, ?)", (name, ""))
+        conn.commit()
+        conn.close()
 
-        save_memory(memory)
-        response = f"Got it. I'll remember that, {name}."
+        response = f"Got it. I'll save you to my database vault, {name}."
 
-    # 2. CHECK NAME LOOKUP
-    elif "what" in user and "my name" in user:
+    # 2. CHECK NAME LOOKUP (Smarter matching for typos)
+    elif "what" in user and "name" in user:
         if current_user:
             response = f"Your name is {current_user}!"
         else:
@@ -111,31 +124,43 @@ def chat():
     elif user.startswith("remember that "):
         if current_user:
             fact = user.replace("remember that ", "").strip()
-            memory[current_user]["fact"] = fact  # Save the fact inside their specific slot
-            save_memory(memory)
-            response = f"Saved to your profile, {current_user}. I won't forget."
+
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("UPDATE users SET fact = ? WHERE name = ?", (fact, current_user))
+            conn.commit()
+            conn.close()
+
+            response = f"Saved to your database profile, {current_user}. I won't forget."
         else:
-            response = "Tell me your name first by saying 'my name is [name]' so I know who I'm remembering things for!"
+            response = "Tell me your name first by saying 'my name is [name]' so I know who I'm saving this fact for!"
 
     # 4. ASK WHAT ZIMMA KNOWS ABOUT YOU
     elif user == "what do you remember":
-        if current_user and current_user in memory:
-            user_data = memory[current_user]
-            if "fact" in user_data:
-                response = f"Your name is {current_user}, and you told me to remember: '{user_data['fact']}'."
+        if current_user:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("SELECT fact FROM users WHERE name = ?", (current_user,))
+            row = cursor.fetchone()
+            conn.close()
+
+            if row and row[0]:
+                response = f"Your name is {current_user}, and my database vault says: '{row[0]}'."
             else:
-                response = f"I know your name is {current_user}, but you haven't told me any other facts yet!"
+                response = f"I know your name is {current_user}, but you haven't given me any facts to lock in the vault yet!"
         else:
             response = "I don't remember anything because I don't know who you are yet!"
 
-    # 5. WIPE JUST YOUR PROFILE
+    # 5. WIPE JUST YOUR PROFILE FROM DATABASE
     elif user == "forget everything":
         if current_user:
-            if current_user in memory:
-                del memory[current_user]
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM users WHERE name = ?", (current_user,))
+            conn.commit()
+            conn.close()
             session.pop("user_name", None)
-            save_memory(memory)
-            response = "Done. I cleared your profile from my memory."
+            response = "Done. I wiped your database vault profile clean."
         else:
             response = "I don't know who you are, so there is nothing to forget!"
 
