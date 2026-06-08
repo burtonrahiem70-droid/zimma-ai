@@ -113,7 +113,7 @@ def chat():
 
         response = f"Got it. I'll save you to my database vault, {name}."
 
-    # 2. CHECK NAME LOOKUP (Smarter matching for typos)
+    # 2. CHECK NAME LOOKUP
     elif "what" in user and "name" in user:
         if current_user:
             response = f"Your name is {current_user}!"
